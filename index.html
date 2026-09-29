@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!--
+  WTBU Radio's Google Cast receiver (application ID BF4776F8).
+
+  It behaves like Google's Default Media Receiver, which the app used before, with one
+  addition: it shows each new song without reloading the stream. The Android app already
+  sends every new song to the speaker as a queue update of the current item (QUEUE_UPDATE).
+  The Default Media Receiver files that away without redrawing, because its screen only
+  changes when a stream loads. Here, an interceptor copies the new song onto the media that
+  is playing and redraws, so the audio never stops.
+
+  Hosting: this file must be served over HTTPS at the receiver URL entered for the
+  application in the Google Cast SDK Developer Console. See README.md, "Casting".
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WTBU Radio</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; }
+    cast-media-player {
+      --background-color: #000;
+      --splash-image: url("https://spinitron.com/images/Station/04/470-img_logo.225x225.png");
+      --logo-image: url("https://spinitron.com/images/Station/04/470-img_logo.225x225.png");
+      --font-family: "Google Sans", Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <cast-media-player></cast-media-player>
+  <script>
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+    const { MessageType } = cast.framework.messages;
+
+    /** The queue item id of what is playing, or null. */
+    function currentItemId() {
+      const item = playerManager.getQueueManager()?.getCurrentItem();
+      return item ? item.itemId : null;
+    }
+
+    // The phone's song updates arrive as QUEUE_UPDATE messages carrying the current item with
+    // new metadata. Let the framework update its queue as usual, and also put the new metadata
+    // on the playing media and broadcast it, which is what the screen and every sender show.
+    playerManager.setMessageInterceptor(MessageType.QUEUE_UPDATE, (request) => {
+      try {
+        const playing = playerManager.getMediaInformation();
+        const items = (request && request.items) || [];
+        const id = currentItemId();
+        const update = items.find((item) => item.itemId === id) || (items.length === 1 ? items[0] : null);
+        const metadata = update && update.media && update.media.metadata;
+        if (playing && metadata) {
+          playing.metadata = metadata;
+          playerManager.setMediaInformation(playing, /* opt_broadcast= */ true);
+        }
+      } catch (e) {
+        console.error("WTBU: song update failed", e);
+      }
+      return request;
+    });
+
+    context.start();
+  </script>
+</body>
+</html>
