@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+  D-Tales Radio's Google Cast receiver (application ID: to be registered; see README.md,
+  "Casting"). The same as WTBU's (../index.html) apart from the name, logo and colours.
+
+  It behaves like Google's Default Media Receiver, with one addition: it shows each new song
+  without reloading the stream. The Android app sends every new song to the speaker as a queue
+  update of the current item (QUEUE_UPDATE). The Default Media Receiver files that away without
+  redrawing, because its screen only changes when a stream loads. Here, an interceptor copies the
+  new song onto the media that is playing and redraws, so the audio never stops.
+
+  Hosting: this file must be served over HTTPS at the receiver URL entered for the application
+  in the Google Cast SDK Developer Console.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>D-Tales Radio</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    /* The app's deep red-to-purple, from the logo's "D". */
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: linear-gradient(135deg, #4A1020 0%, #34123F 50%, #141B45 100%);
+    }
+    cast-media-player {
+      --background-color: transparent;
+      --splash-image: url("https://radio.d-tales.nl/dtalesradio_logo_dark.png");
+      --logo-image: url("https://radio.d-tales.nl/dtalesradio_logo_dark.png");
+      --font-family: "Google Sans", Roboto, sans-serif;
+      --theme-hue: 330;
+      --progress-color: #CA3B3A;
+    }
+  </style>
+</head>
+<body>
+  <cast-media-player></cast-media-player>
+  <script>
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+    const { MessageType } = cast.framework.messages;
+
+    /** The queue item id of what is playing, or null. */
+    function currentItemId() {
+      const item = playerManager.getQueueManager()?.getCurrentItem();
+      return item ? item.itemId : null;
+    }
+
+    // The phone's song updates arrive as QUEUE_UPDATE messages carrying the current item with
+    // new metadata. Let the framework update its queue as usual, and also put the new metadata
+    // on the playing media and broadcast it, which is what the screen and every sender show.
+    playerManager.setMessageInterceptor(MessageType.QUEUE_UPDATE, (request) => {
+      try {
+        const playing = playerManager.getMediaInformation();
+        const items = (request && request.items) || [];
+        const id = currentItemId();
+        const update = items.find((item) => item.itemId === id) || (items.length === 1 ? items[0] : null);
+        const metadata = update && update.media && update.media.metadata;
+        if (playing && metadata) {
+          playing.metadata = metadata;
+          playerManager.setMediaInformation(playing, /* opt_broadcast= */ true);
+        }
+      } catch (e) {
+        console.error("D-Tales: song update failed", e);
+      }
+      return request;
+    });
+
+    context.start();
+  </script>
+</body>
+</html>
