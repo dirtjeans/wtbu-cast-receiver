@@ -40,19 +40,64 @@
       return item ? item.itemId : null;
     }
 
+    // The station's logo: the speaker has it already (it is the splash), so it shows at once.
+    const LOGO = "https://spinitron.com/images/Station/04/470-img_logo.225x225.png";
+
+    /**
+     * Loads [url] into the speaker's image cache. Resolves true when loaded, false when it
+     * failed, and null when it is still loading after [ms].
+     */
+    function preload(url, ms) {
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
+        const image = new Image();
+        image.onload = () => finish(true);
+        image.onerror = () => finish(false);
+        setTimeout(() => finish(null), ms);
+        image.src = url;
+      });
+    }
+
+    /** Shows [metadata] on the playing media, unless a newer update has come since [token]. */
+    let latest = 0;
+    function show(metadata, token) {
+      if (token !== latest) return;
+      const playing = playerManager.getMediaInformation();
+      if (!playing) return;
+      playing.metadata = metadata;
+      playerManager.setMediaInformation(playing, /* opt_broadcast= */ true);
+    }
+
     // The phone's song updates arrive as QUEUE_UPDATE messages carrying the current item with
     // new metadata. Let the framework update its queue as usual, and also put the new metadata
     // on the playing media and broadcast it, which is what the screen and every sender show.
+    //
+    // A new cover is loaded first: the player shows a grey box while it fetches an image (Ken).
+    // If it arrives within a moment, the screen goes straight to it; if not, the logo shows
+    // until it has loaded (and stays if it fails).
     playerManager.setMessageInterceptor(MessageType.QUEUE_UPDATE, (request) => {
       try {
-        const playing = playerManager.getMediaInformation();
         const items = (request && request.items) || [];
         const id = currentItemId();
         const update = items.find((item) => item.itemId === id) || (items.length === 1 ? items[0] : null);
         const metadata = update && update.media && update.media.metadata;
-        if (playing && metadata) {
-          playing.metadata = metadata;
-          playerManager.setMediaInformation(playing, /* opt_broadcast= */ true);
+        if (metadata) {
+          const token = ++latest;
+          const url = metadata.images && metadata.images[0] && metadata.images[0].url;
+          if (!url || url === LOGO) {
+            show(metadata, token);
+          } else {
+            preload(url, 400).then((loaded) => {
+              if (loaded) return show(metadata, token);
+              const withLogo = JSON.parse(JSON.stringify(metadata));
+              withLogo.images = [{ url: LOGO }];
+              show(withLogo, token);
+              if (loaded === null) {
+                preload(url, 60000).then((late) => { if (late) show(metadata, token); });
+              }
+            });
+          }
         }
       } catch (e) {
         console.error("WTBU: song update failed", e);
