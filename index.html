@@ -2,12 +2,21 @@
 <!--
   WTBU Radio's Google Cast receiver (application ID 8E9BC3C5).
 
-  It behaves like Google's Default Media Receiver, which the app used before, with one
-  addition: it shows each new song without reloading the stream. The Android app already
+  It behaves like Google's Default Media Receiver, which the app used before, with two
+  additions: it shows each new song without reloading the stream, and it follows a replay's
+  songs by itself (below). The Android app already
   sends every new song to the speaker as a queue update of the current item (QUEUE_UPDATE).
   The Default Media Receiver files that away without redrawing, because its screen only
   changes when a stream loads. Here, an interceptor copies the new song onto the media that
   is playing and redraws, so the audio never stops.
+
+  Replays (Past shows): a recording loaded with `customData.songs` (each song's start in
+  seconds, title, artist, album, image, and its length when known) has its songs shown here
+  as playback reaches them, and the logo once one has run past its end (live's talk-break
+  rule). So the screen keeps up with the recording while the phone sleeps, which on an iPhone
+  or iPad stops the app sending anything (Ken). A sender may send the list again with better
+  covers, as a queue update carrying the same `customData`. Live streams have no list and
+  work as before.
 
   Hosting: this file must be served over HTTPS at the receiver URL entered for the
   application in the Google Cast SDK Developer Console. See README.md, "Casting".
@@ -69,36 +78,96 @@
       playerManager.setMediaInformation(playing, /* opt_broadcast= */ true);
     }
 
-    // The phone's song updates arrive as QUEUE_UPDATE messages carrying the current item with
-    // new metadata. Let the framework update its queue as usual, and also put the new metadata
-    // on the playing media and broadcast it, which is what the screen and every sender show.
-    //
     // A new cover is loaded first: the player shows a grey box while it fetches an image (Ken).
     // If it arrives within a moment, the screen goes straight to it; if not, the logo shows
     // until it has loaded (and stays if it fails).
+    function present(metadata) {
+      const token = ++latest;
+      const url = metadata.images && metadata.images[0] && metadata.images[0].url;
+      if (!url || url === LOGO) return show(metadata, token);
+      preload(url, 400).then((loaded) => {
+        if (loaded) return show(metadata, token);
+        const withLogo = JSON.parse(JSON.stringify(metadata));
+        withLogo.images = [{ url: LOGO }];
+        show(withLogo, token);
+        if (loaded === null) {
+          preload(url, 60000).then((late) => { if (late) show(metadata, token); });
+        }
+      });
+    }
+
+    // ---- A replay's songs, followed here (see the note at the top).
+
+    /** The replay's timeline from the sender, or null for live. */
+    let timeline = null;
+    /** What the screen shows from it: a song's index, "break" after one, or "before". */
+    let shownKey = null;
+
+    function musicTrack(title, artist, album, image) {
+      const metadata = new cast.framework.messages.MusicTrackMediaMetadata();
+      metadata.title = title || "";
+      metadata.artist = artist || "";
+      if (album) metadata.albumName = album;
+      metadata.images = [{ url: image || LOGO }];
+      return metadata;
+    }
+
+    /** Takes a timeline from a load's or update's media, if it has one. */
+    function adopt(media) {
+      const data = media && media.customData;
+      if (!data || !Array.isArray(data.songs)) return false;
+      timeline = data;
+      shownKey = null;
+      follow();
+      return true;
+    }
+
+    /** Shows the song at the play head, or the show in a talk break, when it changes. */
+    function follow() {
+      if (!timeline || !playerManager.getMediaInformation()) return;
+      const now = playerManager.getCurrentTimeSec();
+      let index = -1;
+      timeline.songs.forEach((song, i) => { if (song.at <= now) index = i; });
+      const song = index >= 0 ? timeline.songs[index] : null;
+      // Live's rule: once a song is half a minute past its logged length, it has ended.
+      const ended = song && song.length > 0 && now >= song.at + 30 + song.length;
+      const key = !song ? "before" : ended ? "break" + index : String(index);
+      if (key === shownKey) return;
+      shownKey = key;
+      if (!song) {
+        present(musicTrack(timeline.before || "No song logged yet", timeline.show, timeline.show, LOGO));
+      } else if (ended) {
+        present(musicTrack(timeline.show, timeline.dj, timeline.show, LOGO));
+      } else {
+        present(musicTrack(song.title, song.artist, song.album, song.image));
+      }
+    }
+    setInterval(follow, 1000);
+
+    playerManager.setMessageInterceptor(MessageType.LOAD, (request) => {
+      try {
+        if (!adopt(request && request.media)) timeline = null;
+      } catch (e) {
+        console.error("WTBU: replay timeline failed", e);
+      }
+      return request;
+    });
+
+    // The phone's song updates arrive as QUEUE_UPDATE messages carrying the current item with
+    // new metadata. Let the framework update its queue as usual, and also put the new metadata
+    // on the playing media and broadcast it, which is what the screen and every sender show.
+    // A replay's update carries its timeline again (with better covers), and the timeline,
+    // not the sender's idea of the song, decides what shows: a phone just woken may be behind.
     playerManager.setMessageInterceptor(MessageType.QUEUE_UPDATE, (request) => {
       try {
         const items = (request && request.items) || [];
         const id = currentItemId();
         const update = items.find((item) => item.itemId === id) || (items.length === 1 ? items[0] : null);
-        const metadata = update && update.media && update.media.metadata;
-        if (metadata) {
-          const token = ++latest;
-          const url = metadata.images && metadata.images[0] && metadata.images[0].url;
-          if (!url || url === LOGO) {
-            show(metadata, token);
-          } else {
-            preload(url, 400).then((loaded) => {
-              if (loaded) return show(metadata, token);
-              const withLogo = JSON.parse(JSON.stringify(metadata));
-              withLogo.images = [{ url: LOGO }];
-              show(withLogo, token);
-              if (loaded === null) {
-                preload(url, 60000).then((late) => { if (late) show(metadata, token); });
-              }
-            });
-          }
-        }
+        const media = update && update.media;
+        if (adopt(media)) return request;
+        if (timeline) return request;
+        const metadata = media && media.metadata;
+        if (metadata) present(metadata);
       } catch (e) {
         console.error("WTBU: song update failed", e);
       }
